@@ -487,12 +487,19 @@ impl Parser {
     pub fn get_root_key(&mut self) -> Result<Option<CellKeyNode>, Error> {
         match &self.base_block {
             Some(bb) => {
+                // A negative or overflowing root offset (a crafted hive) means there is no root.
+                let root_offset = bb.base.root_cell_offset_relative;
+                let Some(offset) = (root_offset >= 0)
+                    .then_some(root_offset as usize)
+                    .and_then(|o| o.checked_add(self.file_info.hbin_offset_absolute))
+                else {
+                    return Ok(None);
+                };
                 let root = CellKeyNode::read(
                     &self.file_info,
                     &mut self.state,
                     CellKeyNodeReadOptions {
-                        offset: bb.base.root_cell_offset_relative as usize
-                            + self.file_info.hbin_offset_absolute,
+                        offset,
                         cur_path: "",
                         filter: None,
                         self_is_filter_match_or_descendent: true,
@@ -694,6 +701,16 @@ mod tests {
     use crate::filter::FilterBuilder;
     use crate::parser_builder::ParserBuilder;
     use md5;
+
+    #[test]
+    fn test_get_root_key_with_negative_root_offset() {
+        let mut data = std::fs::read("test_data/NTUSER.DAT").unwrap();
+        data[0x24..0x28].copy_from_slice(&(-1i32).to_le_bytes());
+        let mut parser = ParserBuilder::from_file(std::io::Cursor::new(data))
+            .build()
+            .unwrap();
+        assert!(parser.get_root_key().unwrap().is_none());
+    }
 
     #[test]
     fn test_parser_iter_postorder() {
