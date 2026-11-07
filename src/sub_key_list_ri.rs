@@ -42,7 +42,10 @@ impl hive_bin_cell::CellSubKeyList for SubKeyListRi {
     fn get_offset_list(&self, hbin_offset_absolute: u32) -> Vec<u32> {
         self.items
             .iter()
-            .map(|x| x.sub_key_list_offset_relative + hbin_offset_absolute)
+            .filter_map(|x| {
+                x.sub_key_list_offset_relative
+                    .checked_add(hbin_offset_absolute)
+            })
             .collect()
     }
 }
@@ -106,6 +109,23 @@ fn parse_sub_key_list_ri_item() -> impl Fn(&[u8]) -> IResult<&[u8], SubKeyListRi
 mod tests {
     use super::*;
     use crate::hive_bin_cell::CellSubKeyList;
+
+    #[test]
+    fn test_get_offset_list_skips_overflowing_offsets() {
+        let list = SubKeyListRi {
+            size: 64,
+            count: 2,
+            items: vec![
+                SubKeyListRiItem {
+                    sub_key_list_offset_relative: 12345,
+                },
+                SubKeyListRiItem {
+                    sub_key_list_offset_relative: u32::MAX,
+                },
+            ],
+        };
+        assert_eq!(vec![16441], list.get_offset_list(4096));
+    }
 
     #[test]
     fn test_sub_key_list_ri_traits() {

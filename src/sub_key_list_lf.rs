@@ -40,7 +40,10 @@ impl hive_bin_cell::CellSubKeyList for SubKeyListLf {
     fn get_offset_list(&self, hbin_offset_absolute: u32) -> Vec<u32> {
         self.items
             .iter()
-            .map(|x| x.named_key_offset_relative + hbin_offset_absolute)
+            .filter_map(|x| {
+                x.named_key_offset_relative
+                    .checked_add(hbin_offset_absolute)
+            })
             .collect()
     }
 }
@@ -101,6 +104,27 @@ impl SubKeyListLfItem {
 mod tests {
     use super::*;
     use crate::hive_bin_cell::CellSubKeyList;
+
+    #[test]
+    fn test_get_offset_list_skips_overflowing_offsets() {
+        let list = SubKeyListLf {
+            size: 64,
+            count: 2,
+            items: vec![
+                SubKeyListLfItem {
+                    named_key_offset_relative: 12345,
+                    name_hint: String::new(),
+                    logs: Logs::default(),
+                },
+                SubKeyListLfItem {
+                    named_key_offset_relative: u32::MAX,
+                    name_hint: String::new(),
+                    logs: Logs::default(),
+                },
+            ],
+        };
+        assert_eq!(vec![16441], list.get_offset_list(4096));
+    }
 
     #[test]
     fn test_sub_key_list_lf_traits() {
