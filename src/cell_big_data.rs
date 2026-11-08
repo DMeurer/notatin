@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-use crate::cell_key_value::{CellKeyValue, CellKeyValueDataTypes};
+use crate::cell_key_value::CellKeyValue;
 use crate::err::Error;
 use crate::file_info::FileInfo;
 use crate::log::Logs;
@@ -41,7 +41,6 @@ impl CellBigData {
     pub(crate) fn get_big_data_bytes(
         file_info: &FileInfo,
         offset: usize,
-        data_type: &CellKeyValueDataTypes,
         data_size: u32,
     ) -> Result<(Vec<u8>, Vec<usize>), Error> {
         let slice = file_info
@@ -69,7 +68,7 @@ impl CellBigData {
             }
         }
         Ok((
-            data_type.get_value_bytes(&big_data_buffer[..]),
+            big_data_buffer,
             data_offsets_absolute.iter().map(|x| *x as usize).collect(),
         ))
     }
@@ -198,8 +197,7 @@ mod tests {
             ]
             .to_vec(),
         };
-        let res =
-            CellBigData::get_big_data_bytes(&file_info, 20, &CellKeyValueDataTypes::REG_DWORD, 4);
+        let res = CellBigData::get_big_data_bytes(&file_info, 20, 4);
         assert_eq!(Err(Error::buffer("get_big_data_bytes")), res);
     }
 }

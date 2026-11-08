@@ -181,30 +181,6 @@ impl CellKeyValueDataTypes {
             }
         }
     }
-
-    pub(crate) fn get_data_type_len(&self) -> Option<usize> {
-        match self {
-            CellKeyValueDataTypes::REG_COMPOSITE_UINT8 => Some(mem::size_of::<u8>()),
-            CellKeyValueDataTypes::REG_COMPOSITE_INT16 => Some(mem::size_of::<i16>()),
-            CellKeyValueDataTypes::REG_COMPOSITE_UINT16 => Some(mem::size_of::<u16>()),
-            CellKeyValueDataTypes::REG_DWORD
-            | CellKeyValueDataTypes::REG_COMPOSITE_UINT32
-            | CellKeyValueDataTypes::REG_DWORD_BIG_ENDIAN => Some(mem::size_of::<u32>()),
-            CellKeyValueDataTypes::REG_COMPOSITE_INT32 => Some(mem::size_of::<i32>()),
-            CellKeyValueDataTypes::REG_COMPOSITE_INT64 => Some(mem::size_of::<i64>()),
-            CellKeyValueDataTypes::REG_QWORD
-            | CellKeyValueDataTypes::REG_COMPOSITE_UINT64
-            | CellKeyValueDataTypes::REG_FILETIME => Some(mem::size_of::<u64>()),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn get_value_bytes(&self, input: &[u8]) -> Vec<u8> {
-        match self.get_data_type_len() {
-            Some(data_type_len) => input[0..std::cmp::min(data_type_len, input.len())].to_vec(), // ok as direct access (checking input.len())
-            None => input.to_vec(),
-        }
-    }
 }
 
 bitflags! {
@@ -379,7 +355,6 @@ impl CellKeyValue {
             self.file_offset_absolute,
             self.detail.data_size_raw(),
             self.detail.data_offset_relative(),
-            &self.data_type,
             file_info,
             &mut self.logs,
         );
@@ -421,7 +396,6 @@ impl CellKeyValue {
         file_offset_absolute: usize,
         data_size_raw: u32,
         data_offset_relative: u32,
-        data_type: &CellKeyValueDataTypes,
         file_info: &FileInfo,
         logs: &mut Logs,
     ) -> (Vec<u8>, Vec<usize>) {
@@ -435,17 +409,13 @@ impl CellKeyValue {
                 if CellKeyValue::BIG_DATA_SIZE_THRESHOLD < data_size_raw
                     && CellBigData::is_big_data_block(slice)
                 {
-                    let (vb, offsets) = CellBigData::get_big_data_bytes(
-                        file_info,
-                        offset,
-                        data_type,
-                        data_size_raw,
-                    )
-                    .or_else(|err| -> Result<(Vec<u8>, Vec<usize>), Error> {
-                        logs.add(LogCode::WarningBigDataContent, &err);
-                        Ok((Vec::new(), Vec::new()))
-                    })
-                    .expect("Error handled in or_else");
+                    let (vb, offsets) =
+                        CellBigData::get_big_data_bytes(file_info, offset, data_size_raw)
+                            .or_else(|err| -> Result<(Vec<u8>, Vec<usize>), Error> {
+                                logs.add(LogCode::WarningBigDataContent, &err);
+                                Ok((Vec::new(), Vec::new()))
+                            })
+                            .expect("Error handled in or_else");
                     value_bytes = vb;
                     data_offsets_absolute.extend(offsets);
                 } else {
@@ -456,7 +426,7 @@ impl CellKeyValue {
                         .buffer
                         .get(offset..offset + data_size_raw as usize)
                     {
-                        Some(slice) => value_bytes = data_type.get_value_bytes(slice),
+                        Some(slice) => value_bytes = slice.to_vec(),
                         None => {
                             logs.add(
                                 LogCode::WarningParse,
@@ -480,7 +450,7 @@ impl CellKeyValue {
             let resident_value = data_offset_relative.to_le_bytes();
 
             match resident_value.get(..data_size as usize) {
-                Some(slice) => value_bytes = data_type.get_value_bytes(slice),
+                Some(slice) => value_bytes = slice.to_vec(),
                 None => {
                     logs.add(
                         LogCode::WarningBigDataContent,
@@ -893,5 +863,28 @@ mod tests {
                 "key_node.sub_values[1].value_content was unexpected type"
             );
         }
+    }
+
+    #[test]
+    fn test_value_keeps_bytes_beyond_its_data_type_size() {
+        // A REG_DWORD stored in 8 bytes: the bytes are kept, and the number is read from the first 4.
+        let mut parser =
+            crate::parser_builder::ParserBuilder::from_path("test_data/win7_ntuser.dat")
+                .build()
+                .unwrap();
+        let key = parser
+            .get_key(
+                r"Software\Microsoft\Windows\CurrentVersion\Group Policy\History\{35378EAC-683F-11D2-A89A-00C04FBBCFA2}\0",
+                false,
+            )
+            .unwrap()
+            .unwrap();
+        let value = key
+            .value_iter()
+            .find(|v| v.detail.value_name() == "lParam")
+            .unwrap();
+        assert_eq!(CellKeyValueDataTypes::REG_DWORD, value.data_type);
+        assert_eq!(Some(vec![0; 8]), value.detail.value_bytes());
+        assert_eq!(CellValue::U32(0), value.get_content().0);
     }
 }
