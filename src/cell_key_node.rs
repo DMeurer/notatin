@@ -48,6 +48,7 @@ use nom::{
     IResult, Parser as NParser,
 };
 use serde::Serialize;
+use std::collections::HashSet;
 use winstructs::security::SecurityDescriptor;
 
 make_file_offset_structs!(
@@ -150,7 +151,14 @@ impl CellKeyNode {
                 .key_path_has_root(true)
                 .build()
                 .unwrap_or_default();
-            self.get_sub_key_internal(&parser.file_info, &mut parser.state, &filter, None)
+            self.get_sub_key_internal(
+                &parser.file_info,
+                &mut parser.state,
+                &filter,
+                None,
+                0,
+                &mut HashSet::new(),
+            )
         }
     }
 
@@ -629,6 +637,8 @@ impl CellKeyNode {
         state: &mut State,
         filter: &Filter,
         sequence_num: Option<u32>,
+        depth: usize,
+        searched: &mut HashSet<(usize, usize)>,
     ) -> Option<Self> {
         let (children, found_key) =
             self.read_sub_keys_internal(file_info, state, filter, sequence_num, false);
@@ -639,7 +649,19 @@ impl CellKeyNode {
             }
         }
         for mut child in children {
-            if let Some(key) = child.get_sub_key_internal(file_info, state, filter, sequence_num) {
+            // A corrupt subkey list can name the same key many times; searching it again at the
+            // same depth finds nothing new, and the repeats multiply with each level.
+            if !searched.insert((child.file_offset_absolute, depth)) {
+                continue;
+            }
+            if let Some(key) = child.get_sub_key_internal(
+                file_info,
+                state,
+                filter,
+                sequence_num,
+                depth + 1,
+                searched,
+            ) {
                 return Some(key);
             }
         }
@@ -903,6 +925,30 @@ mod tests {
             r"\CsiTool-CreateHive-{00000000-0000-0000-0000-000000000000}",
             sub_key.path
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_sub_key_by_path_with_repeated_sub_keys() -> Result<(), Error> {
+        // The root key's subkey list names the root key itself 300 times, so every level of the
+        // path has 300 matches. Without skipping repeats, this lookup reads 300^5 keys.
+        let mut data = std::fs::read("test_data/NTUSER.DAT").unwrap();
+        let (root, list) = (0x1000 + 0x20, 0x1000 + 0x37c0);
+        data[list + 4..list + 6].copy_from_slice(b"li");
+        data[list + 6..list + 8].copy_from_slice(&300u16.to_le_bytes());
+        for i in 0..300 {
+            let at = list + 8 + 4 * i;
+            data[at..at + 4].copy_from_slice(&0x20u32.to_le_bytes());
+        }
+        data[root + 4 + 0x14..root + 4 + 0x18].copy_from_slice(&300u32.to_le_bytes());
+        data[root + 4 + 0x1c..root + 4 + 0x20].copy_from_slice(&0x37c0u32.to_le_bytes());
+        let mut parser = ParserBuilder::from_file(std::io::Cursor::new(data)).build()?;
+        let mut key = parser.get_root_key()?.unwrap();
+        let name = key.key_name.clone();
+        let path = [name.as_str(); 5].join("\\");
+        assert!(key.get_sub_key_by_path(&mut parser, &path).is_some());
+        let path = format!("{path}\\Nope");
+        assert_eq!(None, key.get_sub_key_by_path(&mut parser, &path));
         Ok(())
     }
 
